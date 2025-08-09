@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>싱글마피아42 텍스트 게임</title>
+<style>
+  body { font-family: 'Malgun Gothic', sans-serif; background: #121212; color: #eee; margin: 0; padding: 20px; }
+  #game { max-width: 600px; margin: auto; }
+  h1 { text-align: center; }
+  button { background: #444; border: none; padding: 10px 15px; margin: 5px; color: #eee; cursor: pointer; border-radius: 5px; }
+  button:hover { background: #666; }
+  #messages { min-height: 150px; background: #222; padding: 15px; border-radius: 8px; margin-top: 10px; white-space: pre-wrap; }
+  #players { margin-top: 20px; display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; }
+  .player { background: #333; padding: 8px 12px; border-radius: 6px; cursor: pointer; user-select: none; }
+  .player.alive { background: #28a745; }
+  .player.dead { background: #6c757d; text-decoration: line-through; cursor: default; }
+  .player.you { border: 2px solid #ffc107; }
+  #inputSection { margin-top: 20px; }
+  select { padding: 6px 10px; border-radius: 5px; border: none; }
+</style>
+</head>
+<body>
+<div id="game">
+  <h1>싱글마피아42 텍스트 게임</h1>
+
+  <div id="setup">
+    <label>참가 인원 수: 
+      <select id="playerCount">
+        <!-- 3~12 -->
+      </select>
+    </label>
+    <button id="startBtn">게임 시작</button>
+  </div>
+
+  <div id="messages"></div>
+  <div id="players"></div>
+  <div id="inputSection"></div>
+</div>
+
+<script>
+  const rolesByCount = (n) => {
+    let mafiaCount = Math.max(1, Math.floor(n / 4));
+    let roles = [];
+    roles.push(...Array(mafiaCount).fill("마피아"));
+    if (n >= 6) {
+      roles.push("의사");
+      roles.push("경찰");
+    }
+    let citizenCount = n - roles.length;
+    roles.push(...Array(citizenCount).fill("시민"));
+    // 셔플
+    for (let i = roles.length - 1; i > 0; i--) {
+      let j = Math.floor(Math.random() * (i + 1));
+      [roles[i], roles[j]] = [roles[j], roles[i]];
+    }
+    return roles;
+  };
+
+  const playerCountSelect = document.getElementById("playerCount");
+  for(let i=3; i<=12; i++) {
+    let opt = document.createElement("option");
+    opt.value = i; opt.textContent = i + "명";
+    playerCountSelect.appendChild(opt);
+  }
+
+  const startBtn = document.getElementById("startBtn");
+  const messages = document.getElementById("messages");
+  const playersDiv = document.getElementById("players");
+  const inputSection = document.getElementById("inputSection");
+
+  let gameState = {};
+  /*
+  gameState 구조 예시
+  {
+    players: [{role, alive, id}],
+    phase: 'intro'|'night'|'day'|'vote'|'end',
+    dayCount: 0,
+    nightCount: 0,
+    playerVote: null,
+  }
+  */
+
+  function logMessage(text, clear=false) {
+    if(clear) messages.textContent = "";
+    messages.textContent += text + "\n";
+    messages.scrollTop = messages.scrollHeight;
+  }
+
+  function renderPlayers() {
+    playersDiv.innerHTML = "";
+    gameState.players.forEach(p => {
+      let div = document.createElement("div");
+      div.classList.add("player");
+      div.textContent = (p.id + 1) + (p.id === 0 ? " (당신)" : "");
+      div.dataset.id = p.id;
+      if (p.alive) div.classList.add("alive");
+      else div.classList.add("dead");
+      if (p.id === 0) div.classList.add("you");
+      playersDiv.appendChild(div);
+    });
+  }
+
+  function startGame() {
+    let n = parseInt(playerCountSelect.value);
+    let roles = rolesByCount(n);
+    gameState = {
+      players: roles.map((r,i) => ({role:r, alive:true, id:i})),
+      phase: 'intro',
+      dayCount: 0,
+      nightCount: 0,
+      playerVote: null,
+    };
+    logMessage("게임이 시작되었습니다!", true);
+    logMessage(`당신은 1번 플레이어입니다. 역할은 비밀입니다.\n`);
+    renderPlayers();
+    setTimeout(() => nextPhase('night'), 2000);
+  }
+
+  function getAlive() {
+    return gameState.players.filter(p => p.alive);
+  }
+  function getAliveIds() {
+    return getAlive().map(p => p.id);
+  }
+
+  function nightPhase() {
+    gameState.nightCount++;
+    logMessage(`\n🌙 밤 ${gameState.nightCount}일차가 시작됩니다.`);
+    let mafia = getAlive().filter(p => p.role === "마피아");
+    if (mafia.length === 0) {
+      logMessage("모든 마피아가 제거되어 시민이 승리했습니다!");
+      return nextPhase('end');
+    }
+    let targets = getAlive().filter(p => p.role !== "마피아");
+    if (targets.length === 0) {
+      logMessage("시민이 모두 제거되어 마피아가 승리했습니다!");
+      return nextPhase('end');
+    }
+    // 마피아가 시민 중 한 명 랜덤 선택해서 죽임
+    let victim = targets[Math.floor(Math.random() * targets.length)];
+    victim.alive = false;
+    logMessage(`밤에 ${victim.id + 1}번 플레이어가 죽었습니다.`);
+    renderPlayers();
+    setTimeout(() => nextPhase('day'), 2000);
+  }
+
+  function dayPhase() {
+    gameState.dayCount++;
+    logMessage(`\n☀ 낮 ${gameState.dayCount}일차가 시작되었습니다.`);
+    logMessage("생존자들은 마피아를 찾아내기 위해 투표를 시작합니다.");
+    renderPlayers();
+    setupVote();
+  }
+
+  function setupVote() {
+    inputSection.innerHTML = "<p>누구를 처형할까요? (본인 제외)</p>";
+    let alivePlayers = getAlive().filter(p => p.id !== 0);
+    alivePlayers.forEach(p => {
+      let btn = document.createElement("button");
+      btn.textContent = `${p.id + 1}번 플레이어`;
+      btn.onclick = () => playerVote(p.id);
+      inputSection.appendChild(btn);
+    });
+  }
+
+  function playerVote(votedId) {
+    gameState.playerVote = votedId;
+    inputSection.innerHTML = "";
+    logMessage(`당신은 ${votedId + 1}번 플레이어를 투표했습니다.`);
+
+    // AI 투표: 랜덤(마피아는 시민 투표 선호)
+    let votes = {};
+    function addVote(id) { votes[id] = (votes[id] || 0) + 1; }
+    addVote(votedId); // 플레이어 투표 추가
+
+    let alivePlayers = getAlive().filter(p => p.id !== 0);
+    alivePlayers.forEach(p => {
+      let candidates = getAlive().filter(x => x.id !== p.id);
+      let voteTarget;
+      if (p.role === "마피아") {
+        let nonMafia = candidates.filter(x => x.role !== "마피아");
+        voteTarget = nonMafia.length ? nonMafia[Math.floor(Math.random() * nonMafia.length)] : candidates[Math.floor(Math.random() * candidates.length)];
+      } else {
+        voteTarget = candidates[Math.floor(Math.random() * candidates.length)];
+      }
+      addVote(voteTarget.id);
+    });
+
+    // 최고 득표자 찾기
+    let maxVotes = Math.max(...Object.values(votes));
+    let candidates = Object.keys(votes).filter(k => votes[k] === maxVotes);
+    let executedId = parseInt(candidates[Math.floor(Math.random() * candidates.length)]);
+
+    gameState.players.find(p => p.id === executedId).alive = false;
+    logMessage(`\n투표 결과 ${executedId + 1}번 플레이어가 처형되었습니다.`);
+
+    renderPlayers();
+
+    // 승리 조건 체크
+    if (checkWin()) {
+      return nextPhase('end');
+    } else {
+      setTimeout(() => nextPhase('night'), 2000);
+    }
+  }
+
+  function checkWin() {
+    let alivePlayers = getAlive();
+    let mafiaAlive = alivePlayers.filter(p => p.role === "마피아");
+    let citizensAlive = alivePlayers.filter(p => p.role !== "마피아");
+
+    if (mafiaAlive.length === 0) {
+      logMessage("\n🎉 시민들이 승리했습니다!");
+      return true;
+    }
+    if (mafiaAlive.length >= citizensAlive.length) {
+      logMessage("\n💀 마피아가 승리했습니다!");
+      return true;
+    }
+    return false;
+  }
+
+  function nextPhase(phase) {
+    gameState.phase = phase;
+    switch(phase) {
+      case 'night': nightPhase(); break;
+      case 'day': dayPhase(); break;
+      case 'end':
+        logMessage("\n게임이 종료되었습니다. 역할을 공개합니다.");
+        inputSection.innerHTML = "";
+        showRoles();
+        break;
+    }
+  }
+
+  function showRoles() {
+    let text = "\n=== 역할 공개 ===\n";
+    gameState.players.forEach(p => {
+      text += `${p.id + 1}번: ${p.role} (${p.alive ? "생존" : "사망"})\n`;
+    });
+    logMessage(text);
+  }
+
+  startBtn.onclick = () => {
+    messages.textContent = "";
+    inputSection.innerHTML = "";
+    startGame();
+  };
+
+  function startGame() {
+    let n = parseInt(playerCountSelect.value);
+    let roles = rolesByCount(n);
+    gameState.players = roles.map((r,i) => ({role:r, alive:true, id:i}));
+    gameState.phase = 'intro';
+    gameState.dayCount = 0;
+    gameState.nightCount = 0;
+    gameState.playerVote = null;
+    logMessage("게임이 시작되었습니다!", true);
+    logMessage("당신은 1번 플레이어입니다. 역할은 비밀입니다.\n");
+    renderPlayers();
+    setTimeout(() => nextPhase('night'), 2000);
+  }
+</script>
+</body>
+</html>
