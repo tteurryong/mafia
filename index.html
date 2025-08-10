@@ -1,0 +1,483 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>싱글마피아 - 풀버전 (픽셀아바타 + 향상된 AI)</title>
+<style>
+:root{--bg:#0f0f12;--card:#1b1b1f;--muted:#9aa0a6;--accent:#f6c84c;--alive:#28a745;--dead:#6c757d;}
+*{box-sizing:border-box}
+body{margin:0;font-family:"Malgun Gothic",system-ui,Arial;background:var(--bg);color:#eee;padding:18px;display:flex;justify-content:center}
+#wrap{width:100%;max-width:1000px}
+header{display:flex;justify-content:space-between;align-items:center;gap:12px}
+h1{margin:0;font-size:20px}
+#scoreboard{position:fixed;right:16px;top:16px;background:var(--card);padding:10px;border-radius:8px;min-width:180px;box-shadow:0 6px 18px rgba(0,0,0,0.6)}
+#scoreboard h3{margin:0 0 6px 0;font-size:14px}
+#game{margin-top:12px}
+#controls{background:var(--card);padding:12px;border-radius:8px;display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+select,button{background:#2a2a2f;color:#eee;border:none;padding:8px 10px;border-radius:6px;cursor:pointer}
+button:hover,select:hover{filter:brightness(1.08)}
+#main{display:flex;gap:12px;margin-top:12px}
+#left{flex:1}
+#messages{background:linear-gradient(180deg,#151519,#101014);padding:12px;border-radius:8px;min-height:320px;max-height:640px;overflow:auto;white-space:pre-wrap;font-size:14px}
+#players{margin-top:10px;display:flex;flex-wrap:wrap;gap:8px}
+.playerCard{display:flex;align-items:center;gap:8px;background:#26262a;padding:8px;border-radius:8px;min-width:140px}
+.avatar{width:24px;height:24px;background:#222;border-radius:4px;image-rendering:pixelated}
+.playerInfo{font-size:14px}
+.badge{font-size:12px;padding:3px 6px;border-radius:999px;background:#333;color:#ddd;margin-left:6px}
+.alive{background:var(--alive);color:#022204}
+.dead{background:var(--dead);color:#ddd;text-decoration:line-through}
+.you{outline:3px solid rgba(246,200,76,0.12)}
+#right{width:320px}
+#inputSection{margin-top:12px;background:var(--card);padding:10px;border-radius:8px;min-height:140px}
+.small{font-size:13px;color:var(--muted)}
+#reveal{background:linear-gradient(90deg,#262626,#1a1a1a);padding:10px;border-radius:8px;margin-top:10px;display:none}
+.pixelTiny{width:10px;height:10px;display:inline-block}
+.footerNote{margin-top:8px;color:var(--muted);font-size:13px}
+</style>
+</head>
+<body>
+<div id="wrap">
+  <header>
+    <h1>싱글마피아 — 풀패키지</h1>
+    <div class="small">플레이어는 1번. 픽셀 아바타 · 향상 AI · 경찰 위치 공개</div>
+  </header>
+
+  <div id="scoreboard">
+    <h3>점수판</h3>
+    <div id="scoreList">-</div>
+  </div>
+
+  <div id="game">
+    <div id="controls">
+      참가 인원:
+      <select id="playerCount"></select>
+      <button id="startBtn">게임 시작</button>
+      <button id="quickBtn">빠른시작(7명)</button>
+      <div class="small">경찰: 직접 선택 조사 · 의사: 제한 치료 규칙</div>
+    </div>
+
+    <div id="main">
+      <div id="left">
+        <div id="messages"></div>
+        <div id="players"></div>
+        <div id="inputSection"></div>
+      </div>
+
+      <div id="right">
+        <div id="reveal"><strong>게임 결과 — 역할 공개</strong><div id="revealList"></div></div>
+        <div class="footerNote">종료 후 '다시 시작'으로 새 게임 가능. 점수는 세션 동안 유지됩니다.</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+/* ------------- 초기 세팅 ------------- */
+const playerCountSelect = document.getElementById('playerCount');
+for(let i=3;i<=12;i++){ const o=document.createElement('option'); o.value=i; o.textContent=i+'명'; playerCountSelect.appendChild(o); }
+const startBtn = document.getElementById('startBtn');
+const quickBtn = document.getElementById('quickBtn');
+const messages = document.getElementById('messages');
+const playersDiv = document.getElementById('players');
+const inputSection = document.getElementById('inputSection');
+const revealBox = document.getElementById('reveal');
+const revealList = document.getElementById('revealList');
+const scoreList = document.getElementById('scoreList');
+
+let scores = {}; // id -> score
+function ensureScores(n){ for(let i=0;i<n;i++) if(scores[i]===undefined) scores[i]=0; renderScores(); }
+function renderScores(){ let html=''; for(const [id,sc] of Object.entries(scores)){ html += `플레이어 ${parseInt(id)+1}: ${sc}점<br/>`; } scoreList.innerHTML = html || '-'; }
+
+/* ------------- 게임 상태 / 유틸 ------------- */
+let game = null;
+function rolesByCount(n){
+  let mafiaCount = Math.max(1, Math.floor(n/4));
+  let roles = [];
+  for(let i=0;i<mafiaCount;i++) roles.push('마피아');
+  if(n>=6){ roles.push('의사'); roles.push('경찰'); }
+  while(roles.length < n) roles.push('시민');
+  for(let i=roles.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [roles[i],roles[j]]=[roles[j],roles[i]]; }
+  return roles;
+}
+function log(msg,clear=false){ if(clear) messages.textContent=''; messages.textContent += msg + '\n'; messages.scrollTop = messages.scrollHeight; }
+function alivePlayers(){ return game.players.filter(p=>p.alive); }
+
+/* draw small pixel avatar into a container element */
+function drawAvatar(container, id, role, alive){
+  // create canvas 8x8 scaled to 24x24 to look pixel-art
+  const size = 8;
+  const scale = 3;
+  const canvas = document.createElement('canvas');
+  canvas.width = size; canvas.height = size;
+  canvas.style.width = (size*scale)+'px';
+  canvas.style.height = (size*scale)+'px';
+  canvas.className='avatar';
+  const ctx = canvas.getContext('2d');
+  // deterministic pseudo-random from id
+  function rnd(n){ const x = Math.sin(id*9781 + n*2654435761) * 10000; return Math.abs(x % 1); }
+  const baseHue = Math.floor(rnd(1)*360);
+  for(let y=0;y<size;y++){
+    for(let x=0;x<size;x++){
+      // pattern: symmetric and varied by role
+      let v = rnd(x*size+y) > 0.5 ? 1 : 0;
+      // role influence: mafia red tint, police blue, doctor yellow, citizen green
+      let color = '#666';
+      if(v){
+        if(role==='마피아') color = `hsl(${(baseHue+0)%360} 70% 50%)`;
+        else if(role==='경찰') color = `hsl(${(baseHue+120)%360} 70% 50%)`;
+        else if(role==='의사') color = `hsl(${(baseHue+60)%360} 70% 50%)`;
+        else color = `hsl(${(baseHue+200)%360} 60% 45%)`;
+      } else {
+        color = '#111';
+      }
+      ctx.fillStyle = color;
+      ctx.fillRect(x,y,1,1);
+    }
+  }
+  // overlay dead cross
+  if(!alive){
+    ctx.fillStyle = 'rgba(0,0,0,0.7)'; ctx.fillRect(0,0,size,size);
+    ctx.fillStyle = 'rgba(255,255,255,0.9)'; ctx.font='6px monospace'; ctx.fillText('X',2,6);
+  }
+  container.appendChild(canvas);
+}
+
+/* render players list with avatars */
+function renderPlayers(){
+  playersDiv.innerHTML = '';
+  game.players.forEach(p=>{
+    const card = document.createElement('div'); card.className='playerCard';
+    const avatarWrap = document.createElement('div'); avatarWrap.style.width='36px';
+    drawAvatar(avatarWrap, p.id+7, p.role, p.alive); // seed id+7 to vary
+    const info = document.createElement('div'); info.className='playerInfo';
+    const title = document.createElement('div'); title.textContent = (p.id+1) + (p.id===0? ' (당신)':'');
+    const badge = document.createElement('span'); badge.className='badge';
+    badge.textContent = p.alive ? '생존' : '사망';
+    title.appendChild(badge);
+    const sub = document.createElement('div'); sub.className='small muted'; sub.style.color='#bfbfbf';
+    sub.textContent = p.alive ? p.role==='마피아' ? '의심' : '' : '';
+    info.appendChild(title); info.appendChild(sub);
+    if(!p.alive) card.classList.add('dead');
+    card.appendChild(avatarWrap); card.appendChild(info);
+    if(p.id===0) card.classList.add('you');
+    playersDiv.appendChild(card);
+  });
+}
+
+/* button util */
+function mkBtn(label, cb){ const b=document.createElement('button'); b.textContent=label; b.onclick=cb; return b; }
+
+/* ------------- 게임 로직 ------------- */
+startBtn.onclick = ()=> startGame(parseInt(playerCountSelect.value));
+quickBtn.onclick = ()=>{ playerCountSelect.value=7; startGame(7); };
+
+function startGame(n){
+  const roles = rolesByCount(n);
+  game = {
+    players: roles.map((r,i)=>({id:i, role:r, alive:true})),
+    day:0, night:0,
+    policeInvestigated:new Set(),
+    policeReports:{}, // id->bool
+    nightActions:{mafiaKill:null, doctorSave:null, policeCheck:null},
+    policeReportThisNight:null,
+    forcedVoteTarget:null
+  };
+  ensureScores(n);
+  // reveal police index to all (user requested)
+  const police = game.players.find(p=>p.role==='경찰');
+  if(police) log(`(공지) 경찰은 ${police.id+1}번 플레이어입니다.`, true);
+  else log('(공지) 이번 게임에 경찰 역할이 없습니다.', true);
+  // first-night: mafia know each other -> if player is mafia show teammates
+  const mafiaIds = game.players.filter(p=>p.role==='마피아').map(p=>p.id);
+  if(mafiaIds.length>1 && game.players[0].role==='마피아'){
+    log(`(비밀) 당신의 마피아 동료: ${mafiaIds.filter(id=>id!==0).map(x=>x+1).join(', ')} 번`);
+  } else if(game.players[0].role==='마피아'){
+    log('(비밀) 당신은 유일한 마피아입니다.');
+  }
+  renderPlayers();
+  setTimeout(()=> nextPhase('night'), 700);
+}
+
+function nextPhase(phase){
+  inputSection.innerHTML='';
+  if(phase==='night') nightPhase();
+  else if(phase==='day') dayPhase();
+  else if(phase==='end') endPhase();
+}
+
+/* ---------- NIGHT ---------- */
+function nightPhase(){
+  game.night++;
+  game.nightActions = {mafiaKill:null, doctorSave:null, policeCheck:null};
+  game.policeReportThisNight = null;
+  game.forcedVoteTarget = null;
+  log(`\n🌙 밤 ${game.night} 시작`);
+  renderPlayers();
+
+  if(!game.players[0].alive){
+    log('당신은 사망해 밤 행동 없음.');
+    setTimeout(()=> aiNightActions(), 600); return;
+  }
+
+  const me = game.players[0];
+  if(me.role==='마피아'){ log('당신(마피아)은 죽일 대상을 선택하세요:'); mafiaChoose(); }
+  else if(me.role==='의사'){ log('당신(의사)은 치료 대상을 선택하세요: (경찰 또는 이미 조사된 무죄자 우선)'); doctorChoose(); }
+  else if(me.role==='경찰'){ log('당신(경찰)은 조사 대상을 선택하세요 (본인 제외):'); policeChoose(); }
+  else { log('당신(시민)은 밤 행동 없음.'); setTimeout(()=> aiNightActions(), 600); }
+}
+
+/* mafia choose (player) */
+function mafiaChoose(){
+  inputSection.innerHTML='';
+  const targets = alivePlayers().filter(p=>p.role!=='마피아');
+  targets.forEach(t=>{
+    inputSection.appendChild(mkBtn((t.id+1)+'번', ()=>{ game.nightActions.mafiaKill=t.id; inputSection.innerHTML=''; log(`당신(마피아)은 ${t.id+1}번을 공격 대상으로 선택했습니다.`); setTimeout(()=> aiNightActions(), 400); }));
+  });
+}
+
+/* doctor choose (player) with restriction rules */
+function doctorChoose(){
+  inputSection.innerHTML='';
+  // allowed: police id(s) + previously investigated-not-mafia + self
+  const allowed = new Set();
+  game.players.forEach(p=>{ if(p.role==='경찰') allowed.add(p.id); });
+  for(const [id,isMafia] of Object.entries(game.policeReports || {})){ const idn=parseInt(id); if(isMafia===false) allowed.add(idn); }
+  allowed.add(0); // self always allowed
+  // build candidates
+  const candidates = alivePlayers().filter(p=> allowed.has(p.id));
+  if(candidates.length===0){ // fallback to self
+    inputSection.appendChild(mkBtn('자기 자신', ()=>{ game.nightActions.doctorSave=0; inputSection.innerHTML=''; log('의사가 자신을 치료하기로 선택했습니다.'); setTimeout(()=> aiNightActions(),400); }));
+    return;
+  }
+  candidates.forEach(c=> inputSection.appendChild(mkBtn((c.id+1)+'번', ()=>{ game.nightActions.doctorSave=c.id; inputSection.innerHTML=''; log(`의사가 ${c.id+1}번을 치료 대상으로 선택했습니다.`); setTimeout(()=> aiNightActions(),400); })));
+}
+
+/* police choose (player) */
+function policeChoose(){
+  inputSection.innerHTML='';
+  // prefer not-yet-investigated
+  const pool = alivePlayers().filter(p=> p.id!==0 && !game.policeInvestigated.has(p.id));
+  const list = pool.length? pool : alivePlayers().filter(p=>p.id!==0);
+  list.forEach(t=> inputSection.appendChild(mkBtn((t.id+1)+'번', ()=>{ game.nightActions.policeCheck=t.id; inputSection.innerHTML=''; log(`경찰이 ${t.id+1}번을 조사 대상으로 선택했습니다.`); setTimeout(()=> aiNightActions(),400); })));
+}
+
+/* AI night actions - improved heuristics */
+function aiNightActions(){
+  const alive = alivePlayers();
+
+  // mafia AI: choose target by score (prefer police, frequent investigators, or central threats)
+  if(game.nightActions.mafiaKill === null){
+    const mafiaAis = alive.filter(p=> p.role==='마피아' && p.id!==0);
+    if(mafiaAis.length>0){
+      // build scores for targets
+      const candidates = alive.filter(p=> p.role!=='마피아');
+      let best = null; let bestScore=-Infinity;
+      candidates.forEach(c=>{
+        let score=0;
+        // high priority: police
+        if(c.role==='경찰') score += 40;
+        // if c has investigated before (we can approximate by policeInvestigated set membership)
+        if(game.policeInvestigated && game.policeInvestigated.has(c.id)) score += 12;
+        // if c was investigated and found not mafia => lower priority to kill (they're "trusted") => smaller prob
+        if(game.policeReports && game.policeReports[c.id] === false) score -= 10;
+        // random jitter
+        score += Math.random()*10;
+        if(score>bestScore){ bestScore=score; best=c; }
+      });
+      if(best) { game.nightActions.mafiaKill = best.id; log(`AI 마피아가 ${best.id+1}번을 공격 대상으로 선택했습니다.`); }
+    }
+  }
+
+  // doctor AI: prefer police or previously cleared by police, else protect self
+  if(game.nightActions.doctorSave === null){
+    const doctorsAI = alive.filter(p=> p.role==='의사' && p.id!==0);
+    if(doctorsAI.length>0){
+      let candidate = null;
+      // police living?
+      const cops = game.players.filter(p=> p.role==='경찰' && p.alive).map(p=>p.id);
+      if(cops.length) candidate = cops[Math.floor(Math.random()*cops.length)];
+      else {
+        const cleared = Object.entries(game.policeReports || {}).filter(([k,v])=>v===false).map(([k,v])=>parseInt(k)).filter(id=> game.players[id] && game.players[id].alive);
+        if(cleared.length) candidate = cleared[Math.floor(Math.random()*cleared.length)];
+        else candidate = doctorsAI[0].id; // self
+      }
+      game.nightActions.doctorSave = candidate;
+      log(`AI 의사가 ${candidate+1}번을 치료 대상으로 선택했습니다.`);
+    }
+  }
+
+  // police AI: prefer not-yet-investigated, avoid repeats
+  if(game.nightActions.policeCheck === null){
+    const policeAIs = alive.filter(p=> p.role==='경찰' && p.id!==0);
+    if(policeAIs.length>0){
+      const pool = alive.filter(p=> p.id!==0 && !game.policeInvestigated.has(p.id));
+      const poolUse = pool.length? pool : alive.filter(p=> p.id!==0);
+      const pick = poolUse[Math.floor(Math.random()*poolUse.length)];
+      game.nightActions.policeCheck = pick.id;
+      log(`AI 경찰이 ${pick.id+1}번을 조사 대상으로 선택했습니다.`);
+    }
+  }
+
+  setTimeout(()=> resolveNightActions(), 800);
+}
+
+/* resolve night */
+function resolveNightActions(){
+  const {mafiaKill, doctorSave, policeCheck} = game.nightActions;
+  if(mafiaKill !== null){
+    if(mafiaKill !== doctorSave){
+      game.players[mafiaKill].alive = false;
+      log(`\n밤에 ${mafiaKill+1}번 플레이어가 사망했습니다.`);
+    } else {
+      log(`\n의사가 ${doctorSave+1}번을 치료하여 사망을 막았습니다.`);
+    }
+  } else log('\n마피아의 공격이 없었습니다.');
+
+  if(policeCheck !== null){
+    const isMafia = game.players[policeCheck].role === '마피아';
+    game.policeReports[policeCheck] = isMafia;
+    game.policeInvestigated.add(policeCheck);
+    game.policeReportThisNight = { target: policeCheck, isMafia };
+    log(`경찰이 ${policeCheck+1}번을 조사했습니다 (결과는 아침 공개).`);
+  } else {
+    game.policeReportThisNight = null;
+  }
+
+  renderPlayers();
+
+  // if player dead -> auto
+  if(!game.players[0].alive){
+    log('\n당신이 사망했습니다. 게임 자동 진행됩니다.');
+    setTimeout(()=> nextPhase('day'), 900); return;
+  }
+
+  if(checkWin()){ setTimeout(()=> nextPhase('end'),900); }
+  else setTimeout(()=> nextPhase('day'),900);
+}
+
+/* ---------- DAY ---------- */
+function dayPhase(){
+  game.day++;
+  log(`\n☀ 낮 ${game.day} 시작`);
+
+  // reveal police result
+  if(game.policeReportThisNight){
+    const {target,isMafia} = game.policeReportThisNight;
+    log(`경찰 조사 결과 공개: ${target+1}번은 ${isMafia? '마피아입니다!':'마피아가 아닙니다.'}`);
+    // if found mafia -> force all citizens to vote target
+    if(isMafia){
+      game.forcedVoteTarget = target;
+      log(`모든 시민(마피아 제외)은 ${target+1}번에게 투표합니다.`);
+    } else game.forcedVoteTarget = null;
+  } else game.forcedVoteTarget = null;
+
+  renderPlayers();
+
+  if(!game.players[0].alive){
+    log('당신은 죽어 투표 불가. AI가 투표 진행합니다.');
+    setTimeout(()=> aiVote(null), 900);
+  } else {
+    if(game.forcedVoteTarget !== null && game.players[0].role !== '마피아'){
+      log(`당신은 시민이므로 자동으로 ${game.forcedVoteTarget+1}번에 투표합니다.`);
+      setTimeout(()=> aiVote(game.forcedVoteTarget), 700);
+    } else setupVoteUI();
+  }
+}
+
+/* vote UI */
+function setupVoteUI(){
+  inputSection.innerHTML = '<div class="small">누구를 처형할까요? (본인 제외) — 다수결, 동점이면 처형 없음</div>';
+  const alive = alivePlayers().filter(p=>p.id!==0);
+  alive.forEach(p=> inputSection.appendChild(mkBtn((p.id+1)+'번', ()=>{ inputSection.innerHTML=''; log(`당신은 ${p.id+1}번을 투표했습니다.`); setTimeout(()=> aiVote(p.id),600); })));
+}
+
+/* AI vote (with forced target and vote tally display) */
+function aiVote(playerVoted=null){
+  const votes = {}; function add(id){ votes[id]=(votes[id]||0)+1; }
+  if(playerVoted !== null) add(playerVoted);
+
+  const forced = game.forcedVoteTarget;
+  const ais = alivePlayers().filter(p=>p.id!==0);
+  ais.forEach(ai=>{
+    if(forced !== null && ai.role !== '마피아'){ add(forced); return; }
+    const candidates = alivePlayers().filter(x=> x.id !== ai.id);
+    if(ai.role==='마피아'){
+      // prefer to vote for a non-mafia with high suspicion score
+      const non = candidates.filter(x=> x.role!=='마피아');
+      let pick = non.length? non[Math.floor(Math.random()*non.length)] : candidates[Math.floor(Math.random()*candidates.length)];
+      // small bias: if police has investigated this ai and found non-mafia, avoid picking them
+      add(pick.id);
+    } else {
+      // citizens choose random but prefer investigators (simulate smarter AI)
+      const investigators = candidates.filter(x=> game.policeInvestigated.has(x.id));
+      const pick = (investigators.length && Math.random()<0.5) ? investigators[Math.floor(Math.random()*investigators.length)] : candidates[Math.floor(Math.random()*candidates.length)];
+      add(pick.id);
+    }
+  });
+
+  // show votes
+  log('\n투표 집계:');
+  Object.entries(votes).forEach(([id,count])=> log(`${parseInt(id)+1}번: ${count}표`));
+
+  // determine max
+  let max = 0; let winners=[];
+  for(const [id,count] of Object.entries(votes)){
+    if(count>max){ max=count; winners=[parseInt(id)]; } else if(count===max){ winners.push(parseInt(id)); }
+  }
+
+  if(winners.length===1 && max>0){
+    const executed = winners[0];
+    game.players[executed].alive=false;
+    log(`\n${executed+1}번 플레이어가 처형되었습니다.`);
+  } else {
+    log('\n투표 동점 또는 표 없음으로 처형되지 않았습니다.');
+  }
+
+  renderPlayers();
+
+  if(!game.players[0].alive){
+    log('\n당신이 처형되어 게임 자동 진행됩니다.');
+    setTimeout(()=> { if(checkWin()) nextPhase('end'); else nextPhase('night'); },900); return;
+  }
+
+  if(checkWin()) setTimeout(()=> nextPhase('end'),900);
+  else setTimeout(()=> nextPhase('night'),900);
+}
+
+/* ---------- WIN / END ---------- */
+function checkWin(){
+  const alive = alivePlayers();
+  const mafiaAlive = alive.filter(p=>p.role==='마피아').length;
+  const others = alive.length - mafiaAlive;
+  if(mafiaAlive===0){ log('\n🎉 시민팀 승리!'); applyScores('citizen'); return true; }
+  if(mafiaAlive >= others){ log('\n💀 마피아팀 승리!'); applyScores('mafia'); return true; }
+  return false;
+}
+
+function applyScores(winnerTeam){
+  game.players.forEach(p=>{
+    const team = p.role==='마피아' ? 'mafia' : 'citizen';
+    if(team===winnerTeam) scores[p.id] = (scores[p.id]||0)+10;
+    else scores[p.id] = (scores[p.id]||0)-2;
+  });
+  renderScores();
+}
+
+function endPhase(){
+  log('\n=== 게임 종료 — 역할 공개 ===');
+  let html='';
+  game.players.forEach(p=> html += `${p.id+1}번: ${p.role} (${p.alive? '생존':'사망'})<br/>`);
+  revealBox.style.display='block';
+  revealList.innerHTML = html;
+  inputSection.innerHTML = '<div style="text-align:center;margin-top:10px;"><button id="restart">다시 시작</button></div>';
+  document.getElementById('restart').onclick = ()=> location.reload();
+  renderPlayers();
+}
+
+/* 초기 점수 렌더 */
+renderScores();
+
+</script>
+</body>
+</html>
